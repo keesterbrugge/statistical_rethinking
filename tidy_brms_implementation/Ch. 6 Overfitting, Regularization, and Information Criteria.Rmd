@@ -3,6 +3,8 @@ title: "Ch. 6 Overfitting, Regularization, and Information Criteria"
 author: "A Solomon Kurz"
 date: "3/15/2018"
 output: html_document
+editor_options: 
+  chunk_output_type: inline
 ---
 
 ###6.1.1. More parameters always impove fit.
@@ -11,6 +13,7 @@ We'll start of by making the data with brain size and body size for seven `speci
 
 ```{r, warning = F, message = F}
 library(tidyverse)
+
 
 (
   d <- 
@@ -29,10 +32,10 @@ library(ggrepel)
 
 set.seed(438) #  This makes the geom_text_repel() part reproducible
 d %>%
-  ggplot(aes(x =  mass, y = brain, label = species)) +
+  ggplot(aes(x =  mass, y = brain)) +
   theme_classic() +
   geom_point(color = "plum") +
-  geom_text_repel(size = 3, color = "plum4", family = "Courier") +
+  geom_text_repel(size = 3, color = "plum4", family = "Courier", mapping = aes(label = species)) +
   coord_cartesian(xlim = 30:65) +
   labs(x = "body mass (kg)",
        y = "brain volume (cc)",
@@ -96,6 +99,9 @@ dfLL %>%
 Deviance is the sum of the occasion-level LLs multiplied by -2.
 
 ```{r}
+
+
+
 dfLL <-
   dfLL %>%
   mutate(sums     = rowSums(.),
@@ -157,22 +163,76 @@ Here is how to fit the model in brms.
 ```{r, message = FALSE, warning = FALSE}
 data(cars)
 
-b <- 
-  brm(data = cars, family = gaussian,
+df <- tibble(name = c("model_frac", "model"), data = list(sample_frac(cars, size = 0.4), cars))
+
+# df2 <- df %>% mutate(model = purrr::map(.x = data, .f = ~ brm(data = .x, family = gaussian,
+#       dist ~ 1 + speed,
+#       prior = c(set_prior("normal(0, 100)", class = "Intercept"),
+#                 set_prior("normal(0, 10)", class = "b"),
+#                 set_prior("cauchy(0, 1)", class = "sigma")),
+#       chains = 4, iter = 2000, warmup = 1000, cores = 4)))
+
+df3 <- df %>% mutate(model = data %>% purrr::map( ~ brm(data = .x, family = gaussian,
       dist ~ 1 + speed,
       prior = c(set_prior("normal(0, 100)", class = "Intercept"),
                 set_prior("normal(0, 10)", class = "b"),
                 set_prior("uniform(0, 30)", class = "sigma")),
-      chains = 4, iter = 2000, warmup = 1000, cores = 4)
+      chains = 2, iter = 2000, warmup = 1000, cores = 2))
+      )
 
-print(b) 
+
+
+# b <-
+#   brm(data = cars, family = gaussian,
+#       dist ~ 1 + speed,
+#       prior = c(set_prior("normal(0, 100)", class = "Intercept"),
+#                 set_prior("normal(0, 10)", class = "b"),
+#                 set_prior("uniform(0, 30)", class = "sigma")),
+#       chains = 4, iter = 2000, warmup = 1000, cores = 4)
+
+# b_v2 <- update(b, formula. = dist ~ 1 + speed,
+#                newdata = sample_frac(cars, size = 0.4))
+
+df3 %>% pull(model) %>% map(print)
+
+
+               
+
 ```
+```{r}
+calc_lppd <-function(brmsfit){brmsfit %>% 
+  log_lik %>% 
+  exp %>% 
+  as_tibble %>% 
+  summarise_all(mean) %>% 
+  log %>% 
+  sum}
 
+# df3 <- df3 %>% mutate(lppd = model %>% map(compose(as_tibble, log_lik)) %>% map(summarise_all, compose(log,mean, exp)) %>% map_dbl(sum))# %>% sum )
+# df3 <- df3 %>% mutate(lppd2 = model %>% map_dbl(compose(sum,partial(summarise_all, .funs = compose(log,mean, exp)), as_tibble, log_lik)))
+df3 <- df3 %>% mutate(
+  lppd3 = model %>% map_dbl(
+    . %>% 
+      log_lik %>% 
+      exp %>% 
+      as_tibble %>% 
+      summarise_all(mean) %>% 
+      log %>% 
+      sum)
+  )
+
+df3 <- df3 %>% mutate(
+  lppd4 = model %>% map_dbl(calc_lppd)
+  )
+
+df3
+```
 In brms, you get the loglikelihood with `log_lik()`.
 
 ```{r, results = "hide"}
 dfLL <-
-  b %>%
+  df3 %>% filter(name == "model") %>% pull(model) %>% first() %>% 
+  # b %>%
   log_lik() %>%
   as_tibble()
 
@@ -190,6 +250,11 @@ dfmean <-
   gather(key, means) %>%
   select(means) %>%
   log()
+
+my_lppd <- dfLL %>%
+  # exp() %>%
+  summarise_all(compose(log,mean, exp)) %>% sum 
+
 
 lppd <-
   dfmean %>%
@@ -213,6 +278,19 @@ pwaic <-
 
 pwaic
 dfvar
+
+df3 <- df3 %>% mutate(
+  pwaic = model %>% map_dbl(
+    . %>% 
+      log_lik %>% 
+      as_tibble %>% 
+      summarise_all(var) %>% 
+      sum)
+  )
+
+df3
+
+
 ```
 
 Finally, here's what we've been working so hard for: our hand calculated WAIC value. Compare it to the value returned by the brms `waic()` function.
@@ -220,9 +298,17 @@ Finally, here's what we've been working so hard for: our hand calculated WAIC va
 ```{r, message = F, warning = F}
 -2*(lppd - pwaic)
 
+waic(df3 %>% filter(name == "model") %>% pull(model) %>% first())
+
+df3 %>% mutate(waic = -2*(lppd3 - pwaic))
+
 waic(b)
 ```
+```{r}
 
+
+b %>% tidybayes::as_sample_tibble()
+```
 Here's how we get the WAIC standard error.
 
 ```{r}
@@ -335,7 +421,7 @@ w.b6.12 <- waic(b6.12)
 w.b6.13 <- waic(b6.13)
 w.b6.14 <- waic(b6.14)
 
-compare_ic(w.b6.11, w.b6.12, w.b6.13, w.b6.14)
+compare_ic(w.b6.11, w.b6.12, w.b6.13, w.b6.14) # %>% map("waic")
 ```
 
 I'm not aware of a convenient way to plot the WAIC comparisons of brms models the way McElreath does with rethinking. However, one can get the basic comparison plot with a little data processing. It helps to examine the structure of your WAIC objects. For example:
@@ -504,6 +590,26 @@ ggplot(data = my_coef_tab,
 
 I'm sure there are better ways to do this. Have at it.
 
+```{r}
+library(tidybayes)
+models <- list(b6.11 = b6.11, b6.12 = b6.12, b6.13 = b6.13, b6.14 = b6.14)
+(df <- tibble(name = names(models), model = models) %>% 
+  mutate(coef_broom = model %>% map(.f = tidy)) %>% 
+    unnest(coef_broom) %>% 
+    filter(term != "lp__")
+)
+
+df %>% ggplot() +
+  ggstance::geom_pointrangeh(aes(x = estimate, xmin = lower, xmax = upper, y = name)) + 
+  geom_vline(xintercept =  0, linetype = "dashed") +
+  facet_wrap(~ term, ncol = 1)
+
+
+# bind_rows(linear_estimates, bayes_estimates) %>%
+#   ggplot(aes(y = condition, x = estimate, xmin = conf.low, xmax = conf.high, color = model)) +
+#   geom_pointrangeh(position = position_dodgev(height = .3))
+
+```
 ###6.5.2. Model averaging.
 
 Within the current brms framework, you can do model-averaged predictions with the `pp_average()` function. The default weighting scheme is with the LOO. Here we'll use the `weights = "waic"` argument to match McElreath's method in the text. Because `pp_average()` yields a matrix, we'll want to convert it to a tibble before feeding it into ggplot2.
@@ -643,3 +749,430 @@ Note. The analyses in this document were done with:
 
 ##References
 McElreath, R. (2016). *Statistical rethinking: A Bayesian course with examples in R and Stan.* Chapman & Hall/CRC Press.
+
+
+# Answers
+
+## easy
+
+1: information entropy:
+- measure of uncertainty is continous. Small cahnges prob -> small change uncertainty
+- uncertaintyt increases as possible evenst increase. 
+- uncertainty is additive
+
+
+```{r}
+# 2 - E log(p)
+p = 0.9
+-p*log(p) + (1-p) * log(1-p)
+
+# 3
+p = c(.2,.25,.25,.3)
+-sum(p*log(p))
+
+# 4
+p = c(1/3,1/3,1/3)
+-sum(p*log(p))
+```
+
+
+## medium
+
+### 1 
+aic in dic in waic
+
+aic = d_train + 2p
+assumes flat priors or overwhelmed by likelihood
+posterior is approx multivar gauusian
+sample size much greater than number parametres
+
+dic = 2*average deviane - deviance at posterior mean
+also assumes posterior is approx multivar gaussian
+also assumes sample size >> number parameters. 
+Note: doesn know how to handle priors. 
+
+waic = -2* (  (lppd = )total across observations of the log of the average likelihood of each observation - 
+                       total across observations of the variance of the log probability of each observation)
+                       
+does not require approx multivar gaussian posterior
+
+### 2
+Either you select 1 or you use ensemble. Model uncertainty is lost under selection
+
+### 3
+information criterion increases with number of observations since it takes the sum over observations. 
+
+### 4
+Flat priors are closest to anything. Concentrated priors offer more opportunity for surprise. 
+effective number of parameters estimates the difference between in sample performance and out of sample performance. 
+with more concentrated priors in sample performance will be smaller, but out of sample perforance is usually higher. 
+Therefore the differene (effective number of parameters) becomes smaller when using more concentrated priors. Model becomes less flexible
+
+### 5
+see 4. Less excitable by the data. 
+
+### 6 
+More informative priors lead to a bigger kl divergence between q (used) and p(real). You need more data to cross the distance. 
+
+
+## hard
+
+github issue for brms
+```{r}
+library(rethinking)
+library(tidyverse)
+library(brms)
+
+
+data(Howell1)
+d <- Howell1
+d$age <- (d$age - mean(d$age))/sd(d$age)
+i <- sample(1:nrow(d),size=nrow(d)/2)
+d1 <- d[ i , ]
+
+
+formulas <- list(
+  m1 = height ~ 1 + age,
+  m2 = height ~ 1 + age + I(age^2))
+
+df <- tibble( 
+  name = names(formulas),
+  formulas = formulas
+  ) %>% 
+  mutate(model = formulas %>% purrr::map( 
+    .f = brm, 
+      data = d1, 
+      family = gaussian,
+      prior = c(set_prior("normal(0, 100)", class = "Intercept"),
+                set_prior("normal(0, 10)", class = "b"),
+                set_prior("cauchy(0, 1)", class = "sigma")),
+      chains = 2, iter = 2000, warmup = 1000, cores = 2)
+    )
+
+m1_model <- df$model[[1]]
+m2_model <- df$model[[2]]
+brms::waic(m1_model, m2_model)
+invoke(brms::waic, .x = list(m1_model, m2_model)) # correct values, but names are wrong. 
+invoke(brms::waic, .x = list(m1 = m1_model, m2 = m2_model)) # does not work 
+# returns error: Error in split_dots(x, ..., model_names = model_names) : argument "x" is missing, with no default
+invoke(brms::waic, .x = df$model) # preferred solution, but does not work. 
+# returns error: Error in split_dots(x, ..., model_names = model_names) : argument "x" is missing, with no default
+
+df <- df %>% dplyr::mutate(
+  waic = model %>% purrr::map(.f = brms::waic))
+m1_waic <- df$waic[[1]]
+m2_waic <- df$waic[[2]]
+
+brms::compare_ic(m1_waic, m2_waic) 
+invoke(compare_ic, .x = df$waic)
+```
+
+
+
+
+```{r}
+library(rethinking)
+library(tidyverse)
+library(brms)
+library(broom)
+library(tidybayes)
+
+data(Howell1)
+d <- Howell1
+d$age <- (d$age - mean(d$age))/sd(d$age)
+set.seed( 1000 )
+i <- sample(1:nrow(d),size=nrow(d)/2)
+d1 <- d[ i , ]
+d2 <- d[ -i , ]
+
+```
+
+
+```{r}
+
+multi_formula_brm <- function(...) {
+  model <- NULL
+  function(form){
+    if (is.null(model)){
+      model <<-  brm(formula = form, ...)
+      model
+    } else {
+      update(model, formula. = form)
+    }
+  }
+}
+```
+
+```{r}
+formulas <- list(
+  m1 = height ~ 1 + age,
+  m2 = height ~ 1 + age + I(age^2),
+  m3 = height ~ 1 + age + I(age^2) + I(age^3),
+  m4 = height ~ 1 + age + I(age^2) + I(age^3) + I(age^4),
+  m5 = height ~ 1 + age + I(age^2) + I(age^3) + I(age^4) + I(age^5),
+  m6 = height ~ 1 + age + I(age^2) + I(age^3) + I(age^4) + I(age^5) + I(age^6)
+)
+  
+df <- tibble( 
+  name = names(formulas),
+  form = formulas
+  ) %>% 
+  mutate(model = form %>% purrr::map(
+    .f = multi_formula_brm(
+      data = d1, 
+      family = gaussian,
+      prior = c(set_prior("normal(0, 100)", class = "Intercept"),
+                set_prior("normal(0, 10)", class = "b"),
+                set_prior("cauchy(0, 1)", class = "sigma")),
+      chains = 2, iter = 2000, warmup = 1000, cores = 2))
+      )
+
+df <- df %>% dplyr::mutate(
+  waic = model %>% purrr::map(.f = brms::waic),
+  coef_broom = model %>% purrr::map(.f = broom::tidy)  
+  ) 
+```
+
+
+```{r}
+
+  
+
+
+
+
+  
+
+df 
+
+df %>% 
+  unnest(coef_broom) %>% 
+  filter(term != "lp__") %>% 
+  ggplot() +
+  ggstance::geom_pointrangeh(aes(x = estimate, xmin = lower, xmax = upper, y = name)) + 
+  geom_vline(xintercept =  0, linetype = "dashed") +
+  facet_wrap(~ term, ncol = 1)
+```
+
+```{r}
+brms::waic(df$model[[1]], df$model[[2]],df$model[[3]],df$model[[4]],df$model[[5]],df$model[[6]])
+
+waic_wrapper <- function(...) {
+  dots <- list(...)
+  if (!"x" %in% names(dots)) {
+    names(dots)[1] <- "x"
+  }
+  do.call(brms::waic, dots)
+}
+
+invoke(waic_wrapper, .x = df$model, model_names = df$name)
+# waic_wrapper(df$model)
+```
+
+```{r}
+df$waic
+
+# pp_average(bf$waic,
+#            weights = "waic",
+#            method = "fitted")  # for new data predictions, use method = "predi
+```
+6h2 attempt 1
+```{r}
+
+add_fitted_and_predicted_samples <- function(newdata, model, ...){
+  list(estimate = add_fitted_samples, pred = add_predicted_samples ) %>% 
+    invoke_map(.f = ., .x = list(list(newdata = newdata,  model = model, ...))) %$% 
+    full_join(x = estimate, y = pred) %>% ungroup()
+}
+
+add_fitted_and_predicted_samples(newdata = d1, model = m1_model, n = 2) %>% 
+  ggplot() + 
+  stat_lineribbon(aes( x = area, y = pred), alpha = .3, .prob = c(.)) + 
+  stat_lineribbon(aes( x = area, y = estimate), alpha = .6, .prob = c(.89)) + 
+  ggplot(data = d %>% 
+           data_grid(groupsize = seq_range(groupsize, n = 101), 
+                     area = mean(area)) %>% 
+           add_fitted_and_predicted_samples(model = m5h2)) + 
+  stat_lineribbon(aes( x = groupsize, y = pred), alpha = .3, .prob = c(.89)) + 
+  stat_lineribbon(aes( x = groupsize, y = estimate), alpha = .6, .prob = c(.89)) 
+```
+
+6h2 attempt 2
+```{r}
+overlay_predicted_distribution <- function( data_for_sample, d, predictor, predicted, model){  # also y and model
+  x_var <- rlang::enquo(predictor)
+  x_name <- rlang::quo_name(x_var)
+  y_var <- rlang::enquo(predicted)
+  
+
+  data_for_sample %>%
+    # data_grid(!!x_name := seq_range(!!x_var, n = 101)) %>% 
+    add_predicted_samples(model = model, n = 100) %>% ungroup() %>%
+    ggplot() +
+    geom_point(data = d, aes_string(x = rlang::quo_text(x_var), y = rlang::quo_text(y_var) )) + 
+    stat_lineribbon(aes_string(x = rlang::quo_text(x_var), y = "pred"), alpha = 0.5, .prob = c(.95)) +
+    theme(legend.position="none")
+}
+
+library(patchwork)
+library(modelr)
+
+
+d1 %>% data_grid(age = seq_range(age, n = 50)) %>% overlay_predicted_distribution(d1, age, height, df$model[[1]]) 
+d1 %>% data_grid(age = seq_range(age, n = 50)) %>% overlay_predicted_distribution(d1, age, height, df$model[[2]]) 
+d1 %>% data_grid(age = seq_range(age, n = 50)) %>% overlay_predicted_distribution(d1, age, height, df$model[[3]]) 
+d1 %>% data_grid(age = seq_range(age, n = 50)) %>% overlay_predicted_distribution(d1, age, height, df$model[[4]]) 
+d1 %>% data_grid(age = seq_range(age, n = 50)) %>% overlay_predicted_distribution(d1, age, height, df$model[[5]]) 
+d1 %>% data_grid(age = seq_range(age, n = 50)) %>% overlay_predicted_distribution(d1, age, height, df$model[[6]]) 
+
+```
+6h3
+
+```{r}
+brms_fn_wrapper <- function(fn, ...) {
+  dots <- list(...)
+  if (!"x" %in% names(dots)) {
+    names(dots)[1] <- "x"
+  }
+  do.call(fn, dots)
+}
+
+
+invoke(brms_fn_wrapper, .x = df$model, fn = brms::loo_model_weights, model_names = df$name) -> tmp
+
+df <- df %>% mutate(
+  loo2_weight = as.array(tmp) ,
+  pred_samples = map(.f = add_predicted_samples, 
+                     .x = model,
+                     newdata = d1 %>% data_grid(age = seq_range(age, n = 50)) %>% ungroup(),
+  sampled_pred_samples = map2(.x = pred_samples, 
+                              .y = loo2_weight,
+                              .f = sample_frac) %>% ungroup()
+    )
+  )
+df
+
+df %>% rowwise %>% do(sampled_pred_samples = sample_frac(.$pred_samples, .$loo2_weight)) -> tmp3   
+
+tmp3 %>% unnest() %>% ggplot() + stat_lineribbon(aes(x = age, y = pred), alpha = 0.5, .prob = c(.95) ) + geom_point(data = d1, aes(x = age, y = height))
+
+
+# map_dfr(.x = df %>% pull(pred_samples), .f = )
+# 
+# 
+# 
+# sample_frac(tbl, size = 1, replace = FALSE, weight = NULL, .env = NULL)
+
+
+(invoke(brms_fn_wrapper, .x = df$model, fn = brms::pp_average, model_names = df$name, weights = "loo2", 
+       summary = TRUE, newdata = d1 %>% data_grid(age = seq_range(age, n = 50))) -> model_averaged_pred)
+
+model_averaged_pred %>% as_tibble() %>% 
+  mutate(age_val = d1 %>% data_grid(age = seq_range(age, n = 50)) %>% pull(age)) %>% 
+  ggplot() + 
+  geom_lineribbon(aes(x = age_val, y = Estimate, ymin = Q2.5, ymax = Q97.5, fill = c(0.95)))
+
+
+# not done, I'll write a tidybayes style function, if this com
+df
+```
+I used loo instead of waic. The effect is wider confidence interval due to added model uncertainty. 
+
+6h4
+```{r}
+
+df <- df %>% mutate(
+  waic_score = map_dbl(.x = waic,  .f = ~ pluck(.x , "estimates", 3)),
+  dwaic = waic_score - min(waic_score),
+  deviance = map_dbl(.x = model, .f = ~ log_lik(object = .x, newdata = d2) %>% as_tibble() %>% summarise_all(mean) %>% sum() %*% -2),
+  ddeviance = deviance - min(deviance)
+)
+df
+
+
+```
+waic does a good job of estimating the ordering of deviance
+
+6h6
+
+```{r}
+
+df_6h6flat <- tibble( 
+  name = names(formulas),
+  form = formulas
+  ) %>% 
+  mutate(
+    model = form %>% 
+      purrr::map(
+        .f = multi_formula_brm(
+          data = d1, 
+          family = gaussian,
+          prior = c(set_prior("normal(0, 100)", class = "Intercept"),
+                    set_prior("normal(0, 50)", class = "b"),
+                    set_prior("cauchy(0, 1)", class = "sigma")),
+          chains = 2, iter = 2000, warmup = 1000, cores = 2)),
+    coefficient_tibble = model %>% purrr::map(.f = broom::tidy) 
+      )
+
+df_6h6flat %>% unnest(coefficient_tibble) %>% filter(term != "lp__") %>% ggplot() +
+  ggstance::geom_pointrangeh(aes(x = estimate, xmin = lower, xmax = upper, y = name)) + 
+  geom_vline(xintercept =  0, linetype = "dashed") +
+  facet_wrap(~ term, ncol = 1)
+
+
+df_6h6flat <- df_6h6flat %>% 
+  mutate(
+    waic = model %>% purrr::map(.f = brms::waic),
+    waic_score = map_dbl(.x = waic,  .f = ~ pluck(.x , "estimates", 3)),
+      dwaic = waic_score - min(waic_score),
+    deviance = map_dbl(.x = model, .f = ~ log_lik(object = .x, newdata = d2) %>% as_tibble() %>% summarise_all(mean) %>% sum() %*% -2),
+    ddeviance = deviance - min(deviance)
+)
+df_6h6flat
+```
+
+
+```{r}
+
+df_6h6 <- tibble( 
+  name = names(formulas),
+  form = formulas
+  ) %>% 
+  mutate(
+    model = form %>% 
+      purrr::map(
+        .f = multi_formula_brm(
+          data = d1, 
+          family = gaussian,
+          prior = c(set_prior("normal(0, 100)", class = "Intercept"),
+                    set_prior("normal(0, 5)", class = "b"),
+                    set_prior("cauchy(0, 1)", class = "sigma")),
+          chains = 2, iter = 2000, warmup = 1000, cores = 2)),
+    coefficient_tibble = model %>% purrr::map(.f = broom::tidy) 
+      )
+
+df_6h6 %>% unnest(coefficient_tibble) %>% filter(term != "lp__") %>% ggplot() +
+  ggstance::geom_pointrangeh(aes(x = estimate, xmin = lower, xmax = upper, y = name)) + 
+  geom_vline(xintercept =  0, linetype = "dashed") +
+  facet_wrap(~ term, ncol = 1)
+
+
+df_6h6 <- df_6h6 %>% 
+  mutate(
+    deviance = map_dbl(.x = model, .f = ~ log_lik(object = .x, newdata = d2) %>% as_tibble() %>% summarise_all(mean) %>% sum() %*% -2),
+    ddeviance = deviance - min(deviance)
+)
+df_6h6
+
+# map(.x = df_6h6$model , .f = summary)
+```
+
+I think the previous priors were already too small to see the intended result. I see from 6h6flat that the ddeviance of models with many parameters is greater with flat priors. Probably because the model is less restricted it can overfit the dataset more, thus lowering out of sample prediction. Therefor the out of sample data is more surprising to the overfitted models, thats why higher deviance.
+### TODO
+
+- Use psis-loo http://mc-stan.org/loo/articles/loo2-weights.html with brms. loo::compare  http://mc-stan.org/loo/articles/loo2-example.html
+- Create a closure function that if a model is not fitted it fits it, otherwise it uses the already fitted model and updates it. 
+- Is bayesplot handy?
+- varaible selection package try it out https://cran.r-project.org/web/packages/projpred/vignettes/quickstart.html
+
+model
